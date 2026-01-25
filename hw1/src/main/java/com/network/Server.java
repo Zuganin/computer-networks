@@ -4,6 +4,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.Date;
 
 public class Server {
 
@@ -24,11 +25,14 @@ public class Server {
                     int bytesRead;
 
                     while ((bytesRead = in.read(buffer)) != -1) {
-                        out.write(buffer, 0, bytesRead);
+                        String dateResponse = new Date().toString() + "\n";
+                        byte[] responseBytes = dateResponse.getBytes();
+
+                        out.write(responseBytes);
                         out.flush();
                     }
                 } catch (Exception e) {
-                    System.err.println("Client error: " + e.getMessage());
+                    System.err.println("Client disconnected or error: " + e.getMessage());
                 }
             }
         } catch (Exception e) {

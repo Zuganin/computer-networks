@@ -1,7 +1,9 @@
 package com.network;
 
+import java.io.FileWriter;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.PrintWriter;
 import java.net.Socket;
 import java.util.Random;
 
@@ -20,9 +22,12 @@ public class Client {
         int Q = Integer.parseInt(args[4]);
 
         System.out.println("Starting Client...");
+        String fileName = String.format("log_%d_%d_%d.txt", N, M, Q);
         System.out.println("Connecting to " + ip + ":" + port);
+        System.out.println("Logging to " + fileName);
 
-        try (Socket socket = new Socket(ip, port)) {
+        try (Socket socket = new Socket(ip, port);
+             PrintWriter fileWriter = new PrintWriter(new FileWriter(fileName))) {
             socket.setTcpNoDelay(true);
 
             OutputStream out = socket.getOutputStream();
@@ -31,7 +36,8 @@ public class Client {
             byte[] recvBuffer = new byte[1024];
             Random random = new Random();
 
-            System.out.println("Bytes;TimeMs");
+            fileWriter.println("Bytes; TimeMs");
+            System.out.println("Bytes; TimeMs");
 
             for (int k = 0; k < M; k++) {
                 int size = N * k + 8;
@@ -49,7 +55,9 @@ public class Client {
                 }
 
                 double averageTime = (double) totalTime / Q;
-                System.out.printf("%d;%.4f%n", size, averageTime);
+                fileWriter.printf("%d; %.4f%n", size, averageTime);
+                fileWriter.flush();
+                System.out.printf("%d; %.4f%n", size, averageTime);
             }
 
         } catch (Exception e) {
