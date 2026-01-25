@@ -1,6 +1,6 @@
 package com.network;
 
-import java.io.InputStream;
+import java.io.DataInputStream;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -23,24 +23,38 @@ public class Server {
                     String clientInfo = client.getInetAddress().getHostAddress() + ":" + client.getPort();
                     System.out.println("Client connected: " + clientInfo);
 
-                    InputStream in = client.getInputStream();
+                    DataInputStream in = new DataInputStream(client.getInputStream());
                     OutputStream out = client.getOutputStream();
 
                     byte[] buffer = new byte[65536];
-                    int bytesRead;
                     int requestCount = 0;
 
-                    while ((bytesRead = in.read(buffer)) > 0) {
-                        requestCount++;
-                        
-                        String dateResponse = dateFormat.format(new java.util.Date()) + "\n";
-                        byte[] responseBytes = dateResponse.getBytes();
+                    try {
+                        while (true) {
+                            // Читаем размер данных (4 байта)
+                            int dataSize = in.readInt();
+                            
+                            // Читаем точно dataSize байт
+                            int totalRead = 0;
+                            while (totalRead < dataSize) {
+                                int bytesRead = in.read(buffer, 0, Math.min(buffer.length, dataSize - totalRead));
+                                if (bytesRead == -1) break;
+                                totalRead += bytesRead;
+                            }
+                            
+                            requestCount++;
+                            
+                            String dateResponse = dateFormat.format(new java.util.Date()) + "\n";
+                            byte[] responseBytes = dateResponse.getBytes();
 
-                        out.write(responseBytes);
-                        out.flush();
-                        
-                        System.out.printf("Request #%d from %s: received %d bytes, sent response%n", 
-                                         requestCount, clientInfo, bytesRead);
+                            out.write(responseBytes);
+                            out.flush();
+                            
+                            System.out.printf("Request #%d from %s: received %d bytes, sent response%n", 
+                                             requestCount, clientInfo, totalRead);
+                        }
+                    } catch (java.io.EOFException e) {
+                        // Клиент закрыл соединение - это нормально
                     }
                     
                     System.out.println("Client disconnected: " + clientInfo + " (total requests: " + requestCount + ")");

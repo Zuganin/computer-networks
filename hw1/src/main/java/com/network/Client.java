@@ -1,8 +1,8 @@
 package com.network;
 
+import java.io.DataOutputStream;
 import java.io.FileWriter;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.net.Socket;
 import java.util.Random;
@@ -30,7 +30,7 @@ public class Client {
              PrintWriter fileWriter = new PrintWriter(new FileWriter(fileName))) {
             socket.setTcpNoDelay(true);
 
-            OutputStream out = socket.getOutputStream();
+            DataOutputStream out = new DataOutputStream(socket.getOutputStream());
             InputStream in = socket.getInputStream();
 
             byte[] recvBuffer = new byte[1024];
@@ -47,7 +47,8 @@ public class Client {
                 for (int q = 0; q < Q; q++) {
                     random.nextBytes(data);
                     long start = System.currentTimeMillis();
-                    out.write(data);
+                    out.writeInt(size);  // Отправляем размер данных
+                    out.write(data);     // Отправляем сами данные
                     out.flush();
                     int read = in.read(recvBuffer);
                     long end = System.currentTimeMillis();
