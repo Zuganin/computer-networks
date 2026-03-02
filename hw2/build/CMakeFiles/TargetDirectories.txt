@@ -1,0 +1,3 @@
+/Users/vadimzenin/ДЗшки/computer-network/hw2/build/CMakeFiles/arp_tool.dir
+/Users/vadimzenin/ДЗшки/computer-network/hw2/build/CMakeFiles/edit_cache.dir
+/Users/vadimzenin/ДЗшки/computer-network/hw2/build/CMakeFiles/rebuild_cache.dir
