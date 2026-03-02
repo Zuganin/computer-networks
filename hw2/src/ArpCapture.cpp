@@ -1,103 +1,91 @@
 #include "ArpCapture.h"
 
-#include <PcapLiveDevice.h>
 #include <EthLayer.h>
 #include <ArpLayer.h>
 #include <Packet.h>
+#include <RawPacket.h>
 
 #include <iostream>
 #include <iomanip>
 #include <atomic>
 #include <thread>
-#include <chrono>
 
-// Данные, передаваемые в колбэк
-struct CaptureContext {
+struct CapCtx {
     std::atomic<bool> running{true};
 };
 
-//  Вспомогательная функция: красивый вывод ARP пакета 
-
 static void printArpPacket(const pcpp::ArpLayer* arp, const pcpp::EthLayer* eth) {
     const pcpp::arphdr* hdr = arp->getArpHeader();
-
     uint16_t op    = ntohs(hdr->opcode);
     uint16_t htype = ntohs(hdr->hardwareType);
     uint16_t ptype = ntohs(hdr->protocolType);
 
     std::string opStr = (op == pcpp::ARP_REQUEST) ? "REQUEST" :
-                        (op == pcpp::ARP_REPLY)   ? "REPLY"   : "UNKNOWN(" + std::to_string(op) + ")";
+                        (op == pcpp::ARP_REPLY)   ? "REPLY"   :
+                                                    "UNKNOWN(" + std::to_string(op) + ")";
 
-    std::cout << "┌─────────────────────────────────────────────────────┐\n";
-    std::cout << "│  ARP " << opStr << "\n";
-    std::cout << "│  Ethernet:  " << eth->getSourceMac()  << "  →  "
-                                   << eth->getDestMac()   << "\n";
-
-    std::cout << "│  HW Type:   " << htype << " (";
+    std::cout << "\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n";
+    std::cout << "\u2502  ARP " << opStr << "\n";
+    std::cout << "\u2502  Ethernet:  " << eth->getSourceMac() << "  ->  "
+                                       << eth->getDestMac()  << "\n";
+    std::cout << "\u2502  HW Type:   " << htype << " (";
     if      (htype == 0x0001) std::cout << "Ethernet)";
     else if (htype == 0x0006) std::cout << "IEEE 802)";
     else                      std::cout << "other)";
     std::cout << "\n";
-
-    std::cout << "│  Proto:     0x" << std::hex << std::uppercase
-              << std::setw(4) << std::setfill('0') << ptype
-              << std::dec;
+    std::cout << "\u2502  Proto:     0x" << std::hex << std::uppercase
+              << std::setw(4) << std::setfill('0') << ptype << std::dec;
     if (ptype == 0x0800) std::cout << " (IPv4)";
     std::cout << "\n";
-
-    std::cout << "│  Sender:    " << arp->getSenderMacAddress()
+    std::cout << "\u2502  Sender:    " << arp->getSenderMacAddress()
               << "  /  " << arp->getSenderIpAddr() << "\n";
-    std::cout << "│  Target:    " << arp->getTargetMacAddress()
+    std::cout << "\u2502  Target:    " << arp->getTargetMacAddress()
               << "  /  " << arp->getTargetIpAddr() << "\n";
-
-    // Определяем Gratuitous ARP
     if (op == pcpp::ARP_REQUEST &&
         arp->getSenderIpAddr() == arp->getTargetIpAddr()) {
-        std::cout << "│  *** GRATUITOUS ARP ***\n";
+        std::cout << "\u2502  *** GRATUITOUS ARP ***\n";
     }
-
-    std::cout << "└─────────────────────────────────────────────────────┘\n";
+    std::cout << "\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n";
 }
 
-// Колбэк захвата
-
-static void onPacketArrives(pcpp::RawPacket* rawPacket,
-                            pcpp::PcapLiveDevice* /*dev*/,
-                            void* cookie)
-{
-    auto* ctx = static_cast<CaptureContext*>(cookie);
+static void pcapCb(u_char* user, const struct pcap_pkthdr* hdr, const u_char* data) {
+    auto* ctx = reinterpret_cast<CapCtx*>(user);
     if (!ctx->running) return;
 
-    pcpp::Packet parsedPacket(rawPacket);
+    timeval ts = hdr->ts;
+    pcpp::RawPacket rawPkt(data, (int)hdr->caplen, ts, false);
+    pcpp::Packet parsed(&rawPkt);
 
-    auto* arpLayer = parsedPacket.getLayerOfType<pcpp::ArpLayer>();
-    if (!arpLayer) return;  // не ARP, пропускаем
-
-    auto* ethLayer = parsedPacket.getLayerOfType<pcpp::EthLayer>();
+    auto* arpLayer = parsed.getLayerOfType<pcpp::ArpLayer>();
+    if (!arpLayer) return;
+    auto* ethLayer = parsed.getLayerOfType<pcpp::EthLayer>();
     if (!ethLayer) return;
 
     printArpPacket(arpLayer, ethLayer);
 }
 
-// Публичный метод
+void ArpCapture::start(pcap_t* handle) {
+    CapCtx ctx;
 
-void ArpCapture::start(pcpp::PcapLiveDevice* device) {
-    CaptureContext ctx;
-
-    std::cout << "\n[ArpCapture] Захват ARP пакетов (promiscuous mode).\n"
+    std::cout << "\n[ArpCapture] Захват ARP пакетов запущен.\n"
               << "             Нажмите Enter для остановки...\n\n";
 
-    if (!device->startCapture(onPacketArrives, &ctx)) {
-        std::cerr << "[ArpCapture] Не удалось запустить захват.\n";
-        return;
-    }
+    std::thread captureThread([&]() {
+        while (ctx.running) {
+            pcap_dispatch(handle, 100, pcapCb, (u_char*)&ctx);
+        }
+    });
 
-    // Ждём нажатия Enter
-    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
     std::cin.get();
 
     ctx.running = false;
-    device->stopCapture();
+    pcap_breakloop(handle);
+    captureThread.join();
 
     std::cout << "[ArpCapture] Захват остановлен.\n";
 }
+
+
+// Данные, передаваемые в колбэк
+
+

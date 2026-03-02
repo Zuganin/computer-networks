@@ -1,4 +1,4 @@
-#pragma once
+
 #include <string>
 
 /**
@@ -13,11 +13,8 @@ struct Config {
 
     /**
      * Загружает конфиг из файла.
-     * @param path путь к config.txt
-     * @return true если успешно, false при ошибке
      */
     bool load(const std::string& path = "config.txt");
 
-    /** Выводит загруженные параметры в stdout. */
     void print() const;
 };
