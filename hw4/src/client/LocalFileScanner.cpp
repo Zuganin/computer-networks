@@ -13,8 +13,13 @@ std::vector<FileInfo> LocalFileScanner::ScanDirectory(const std::string& directo
 
     for (const auto& entry : std::filesystem::directory_iterator(directoryPath)) {
         if (entry.is_regular_file()) {
+            std::string fname = entry.path().filename().string();
+            if (fname.empty() || fname[0] == '.') {
+                continue;
+            }
+
             FileInfo info;
-            info.filename = entry.path().filename().string();
+            info.filename = fname;
             info.size = entry.file_size();
             info.checksum = CalculateChecksum(entry.path().string());
             

@@ -4,6 +4,14 @@
 #include <cstdint>
 #include <string>
 
+enum class MessageType : uint8_t {
+    CLIENT_CONNECT = 1,
+    FILE_LIST = 2,
+    FILE_SYNC_RESPONSE = 3,
+    FILE_CHUNK = 4,
+    FILE_TRANSFER_ACK = 5
+};
+
 struct MsgHeader {
     uint32_t messageLength; 
     uint32_t messageID;

@@ -15,6 +15,7 @@ class ClientSession : public std::enable_shared_from_this<ClientSession> {
 private:
     tcp::socket socket_;
     std::string storage_dir_;
+    std::string client_id_;
     
     std::vector<uint8_t> header_buffer_;
     std::vector<uint8_t> body_buffer_;

@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 #include <boost/asio.hpp>
+#include "../common/Message.h"
+
 
 using boost::asio::ip::tcp;
 
@@ -16,11 +18,14 @@ private:
     boost::asio::io_context io_;
     tcp::socket socket_;
 
+    void SendMessage(const Message& msg);
+
 public:
     Client(const std::string& config_file);
     ~Client();
     void ConnectToServer();
     std::string GetId() const;
+    void StartSync();
     
 };
 

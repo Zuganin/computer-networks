@@ -8,15 +8,14 @@ int main() {
 
     try {
         Client client("/Users/vadimzenin/ДЗшки/computer-network/hw4/src/common/config.yaml");
-        std::cout << "✅ Client is ready!\n";
         std::cout << "   Client ID: " << client.GetId() << "\n\n";
         client.ConnectToServer();
+        client.StartSync();
 
     } catch (const std::exception& e) {
-        std::cerr << "❌ Error: " << e.what() << "\n";
+        std::cerr << "Ошибка: " << e.what() << "\n";
         return 1;
     }
-    while(true){}
 
     return 0;
 }

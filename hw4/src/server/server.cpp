@@ -39,7 +39,7 @@ Server::~Server() {
 void Server::Start() {
     std::cout << "[Server] Запущен и ожидает подключений..." << std::endl;
     AcceptConnection();
-    io_.run(); // Эта функция блокирует поток и крутит цикл событий (event loop)
+    io_.run();
 }
 
 void Server::AcceptConnection() {
@@ -48,6 +48,6 @@ void Server::AcceptConnection() {
             if (!ec) {
                 std::make_shared<ClientSession>(std::move(socket), storage_dir_)->Start();
             }
+            AcceptConnection();
         });
-
 }
