@@ -36,7 +36,7 @@
 *.app
 
 ### CMake ###
-CMakeLists.txt.user
+CMakeLists.txt.
 CMakeCache.txt
 CMakeFiles
 CMakeScripts
@@ -634,6 +634,7 @@ MigrationBackup/
 ./src/common/config.yaml
 ./src/server/ClientsStorages/
 ./src/client/client*_storage/
-./*.md
+*.md
 ./.vscode
+
 # End of https://www.toptal.com/developers/gitignore/api/c++,vs,macos,python,venv,cmake,sam+configs
