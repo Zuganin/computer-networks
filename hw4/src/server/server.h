@@ -9,14 +9,15 @@ using boost::asio::ip::tcp;
 class Server {
 private:
     int port_;
+    std::string storage_dir_;
     boost::asio::io_context io_;
-    // tcp::socket socket_;
     tcp::acceptor acceptor_;
 
 public:
     Server(const std::string& config_file);
     ~Server();
     void Start();
+    void AcceptConnection();
 };
 
 

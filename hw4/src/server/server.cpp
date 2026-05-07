@@ -4,17 +4,27 @@
 #include <openssl/evp.h>
 #include <yaml-cpp/yaml.h>
 
+#include "ClientSession.h"
 #include "server.h"
 #include <iostream>
 
 Server::Server(const std::string& config_file) : io_(), acceptor_(io_) {
-    try{
+    try {
         YAML::Node config = YAML::LoadFile(config_file);
         port_ = config["port"].as<int>();
-        std::cout << "[Server] Успешно инициализирован!" << std::endl;
+        storage_dir_ = config["storage_dir"].as<std::string>();
+        
+        std::filesystem::create_directories(storage_dir_);
 
-    } catch(std::exception& e) {
-         std::cerr << "[Server] Ошибка при чтении конфига: " << e.what() << std::endl;
+        tcp::endpoint endpoint(tcp::v4(), port_);
+        acceptor_.open(endpoint.protocol());
+        acceptor_.set_option(tcp::acceptor::reuse_address(true));
+        acceptor_.bind(endpoint);
+        acceptor_.listen();
+
+        std::cout << "[Server] Инициализирован на порту " << port_ << std::endl;
+    } catch(const std::exception& e) {
+        std::cerr << "[Server] Ошибка конфига: " << e.what() << std::endl;
         throw;
     }
 }
@@ -27,32 +37,17 @@ Server::~Server() {
 }
 
 void Server::Start() {
-    try {
-        // Создаем endpoint (адрес, на котором слушать)
-        tcp::endpoint endpoint(tcp::v4(), port_);
-        
-        // Открываем acceptor для слушания
-        acceptor_.open(tcp::v4());
-        acceptor_.set_option(tcp::acceptor::reuse_address(true));
-        acceptor_.bind(endpoint);
-        acceptor_.listen();
-        
-        std::cout << "[Server] Слушаем на 127.0.0.1:" << port_ << std::endl;
-        
-        // Бесконечный цикл принятия клиентов
-        while (true) {
-            tcp::socket socket(io_);
-            acceptor_.accept(socket);  // БЛОКИРУЕМСЯ здесь, ждем клиента
-            
-            std::cout << "[Server] Новый клиент подключился: " 
-                      << socket.remote_endpoint().address() << std::endl;
-            
-            // TODO: Отправить приветствие клиенту или запустить обработчик
-            socket.close();
-        }
-        
-    } catch (std::exception& e) {
-        std::cerr << "[Server] Ошибка запуска сервера: " << e.what() << std::endl;
-        throw;
-    }
+    std::cout << "[Server] Запущен и ожидает подключений..." << std::endl;
+    AcceptConnection();
+    io_.run(); // Эта функция блокирует поток и крутит цикл событий (event loop)
+}
+
+void Server::AcceptConnection() {
+    acceptor_.async_accept(
+        [this](boost::system::error_code ec ,tcp::socket socket) {
+            if (!ec) {
+                std::make_shared<ClientSession>(std::move(socket), storage_dir_)->Start();
+            }
+        });
+
 }
