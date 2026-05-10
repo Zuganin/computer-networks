@@ -7,6 +7,7 @@
 #include "../common/Message.h"
 #include <iostream>
 #include <boost/asio.hpp>
+#include <fstream>
 #include <filesystem>
 
 using boost::asio::ip::tcp;
@@ -21,9 +22,16 @@ private:
     std::vector<uint8_t> body_buffer_;
     MsgHeader current_header_;
 
+    bool is_dma_mode_ = true;
+    uint64_t dma_bytes_expected_ = 0;
+    std::ofstream dma_file_;
+    std::vector<char> dma_buffer_;
+
     void ReadHeader();
     void ReadBody();
     void HandleMessage();
+
+    void ReadRawDMA();
 
 public:
     ClientSession(tcp::socket socket, const std::string& storage_dir);

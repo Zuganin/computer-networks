@@ -9,7 +9,8 @@ enum class MessageType : uint8_t {
     FILE_LIST = 2,
     FILE_SYNC_RESPONSE = 3,
     FILE_CHUNK = 4,
-    FILE_TRANSFER_ACK = 5
+    FILE_TRANSFER_ACK = 5,
+    FILE_START_DMA = 6
 };
 
 struct MsgHeader {

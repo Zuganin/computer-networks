@@ -2,28 +2,139 @@
 #include <iostream>
 #include <fstream>
 #include <thread>
+#include <chrono>
 #include <boost/system/error_code.hpp>
 #include <yaml-cpp/yaml.h>
 #include "../common/Message.h"
 #include "LocalFileScanner.h"
 
-Client::Client(const std::string& config_file) : client_id_(""), local_dir_(""), server_host_(""), server_port_(5252), io_(), socket_(io_) {
-    try {
-        YAML::Node config = YAML::LoadFile(config_file);
+#ifdef __APPLE__
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/uio.h>
+#include <fcntl.h>
+#elif __linux__
+#include <sys/sendfile.h>
+#include <fcntl.h>
+#endif
+
+void Client::SendMessage(tcp::socket& sock, const Message& msg) {
+    std::vector<uint8_t> header_bytes = Message::SerializeHeader(msg.header);
+
+    boost::asio::write(sock, boost::asio::buffer(header_bytes));
+    boost::asio::write(sock, boost::asio::buffer(msg.body));
+}
+
+size_t Client::SendFileDMA(tcp::socket& sock, const std::string& fname, const std::string& filepath) {
+    int fd = open(filepath.c_str(), O_RDONLY);
+    if (fd < 0) return 0;
+
+    size_t fileSize = std::filesystem::file_size(filepath);
+
+    // 1. Отправляем метаданные 1 раз 
+    Message start_msg;
+    start_msg.header.messageID = static_cast<uint32_t>(MessageType::FILE_START_DMA);
+    
+    // Формируем тело: [Размер файла (8 байт)] + [Имя файла]
+    uint64_t size_net = htonll(fileSize); 
+    start_msg.body.resize(8 + fname.size());
+    std::memcpy(start_msg.body.data(), &size_net, 8);
+    std::memcpy(start_msg.body.data() + 8, fname.c_str(), fname.size());
+    
+    start_msg.header.messageLength = start_msg.body.size();
+    SendMessage(sock, start_msg);
+
+    // 2. Отправляем сырые данные
+    off_t offset = 0;
+    size_t total_sent = 0;
+
+    while (offset < (off_t)fileSize) {
+        size_t bytes_to_send = fileSize - offset; 
         
-        client_id_ = config["client_id"].as<std::string>();
-        local_dir_ = config["local_dir"].as<std::string>();
-        server_host_ = config["server_host"].as<std::string>();
-        server_port_ = config["server_port"].as<int>();
-        
-        std::cout << "[Client " << client_id_ << "] Инициализирован" << std::endl;
-        std::cout << "  Локальная папка: " << local_dir_ << std::endl;
-        std::cout << "  Сервер: " << server_host_ << ":" << server_port_ << std::endl;
-        
-    } catch (const std::exception& e) {
-        std::cerr << "[Client] Ошибка при чтении конфига: " << e.what() << std::endl;
-        throw;
+        int sock_fd = sock.native_handle();
+        #if defined(__APPLE__)
+        off_t len = bytes_to_send;
+        int res = sendfile(fd, sock_fd, offset, &len, nullptr, 0);
+        if (res != 0) break;
+        size_t sent_now = len;
+        #elif defined(__linux__)
+        off_t off = offset;
+        ssize_t sent_now = sendfile(sock_fd, fd, &off, bytes_to_send);
+        if (sent_now <= 0) break; 
+        #endif
+
+        offset += sent_now;
+        total_sent += sent_now;
     }
+    close(fd);
+    return total_sent;
+}
+
+size_t Client::SendFileStandard(tcp::socket& sock, const std::string& fname, const std::string& filepath) {
+    size_t total_sent = 0;
+    std::ifstream file(filepath, std::ios::binary);
+    if (!file) return 0;
+
+    char buffer[262144];
+    while (file.read(buffer, sizeof(buffer)) || file.gcount() > 0) {
+        size_t bytes_read = file.gcount();
+        uint32_t name_len_net = htonl(static_cast<uint32_t>(fname.size()));
+        
+        Message chunk_msg;
+        chunk_msg.header.messageID = static_cast<uint32_t>(MessageType::FILE_CHUNK);
+        chunk_msg.body.resize(4 + fname.size() + bytes_read);
+        
+        std::memcpy(chunk_msg.body.data(), &name_len_net, 4);
+        std::memcpy(chunk_msg.body.data() + 4, fname.c_str(), fname.size());
+        std::memcpy(chunk_msg.body.data() + 4 + fname.size(), buffer, bytes_read);
+
+        chunk_msg.header.messageLength = chunk_msg.body.size();
+        SendMessage(sock, chunk_msg);
+        
+        total_sent += bytes_read;
+    }
+    return total_sent;
+}
+
+void Client::ExecuteUploadTask(std::string fname) {
+    try {
+        boost::asio::io_context t_io;
+        tcp::socket t_sock(t_io);
+        tcp::endpoint endpoint(boost::asio::ip::make_address(server_host_), server_port_);
+        t_sock.connect(endpoint);
+
+        // 1. Авторизация в новом соединении
+        SendAuth(t_sock);
+
+        // 2. Отправка файла
+        std::string path = (std::filesystem::path(local_dir_) / fname).string();
+        auto t1 = std::chrono::high_resolution_clock::now();
+        
+        size_t sent = use_dma_ ? SendFileDMA(t_sock, fname, path) 
+                               : SendFileStandard(t_sock, fname, path);
+
+        auto t2 = std::chrono::high_resolution_clock::now();
+        double ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+        
+        std::cout << "[Client] Файл " << fname << " (" << sent << " байт) отправлен за " 
+                  << ms << " ms [Режим: " << (use_dma_ ? "DMA" : "STD") << "]" << std::endl;
+
+        t_sock.shutdown(tcp::socket::shutdown_both);
+        t_sock.close();
+    } catch (const std::exception& e) {
+        std::cerr << "[Thread Error] " << fname << ": " << e.what() << std::endl;
+    }
+}
+
+Client::Client(const std::string& config_file) : client_id_(""), local_dir_(""), server_host_(""), server_port_(5252), use_dma_(false), io_(), socket_(io_) {
+    YAML::Node config = YAML::LoadFile(config_file);
+    client_id_ = config["client_id"].as<std::string>();
+    local_dir_ = config["local_dir"].as<std::string>();
+    server_host_ = config["server_host"].as<std::string>();
+    server_port_ = config["server_port"].as<int>();
+    if (config["use_dma"]) use_dma_ = config["use_dma"].as<bool>();
+    
+    std::cout << "[Client " << client_id_ << "] Инициализирован. DMA: " << (use_dma_?"ВКЛ":"ВЫКЛ") << std::endl;
 }
 Client::~Client(){
     try {
@@ -52,33 +163,29 @@ void Client::ConnectToServer(){
     }
 }
 
+void Client::SendAuth(boost::asio::ip::tcp::socket& sock) {
+    Message msg;
+    msg.header.messageID = static_cast<uint32_t>(MessageType::CLIENT_CONNECT);
+    msg.body.assign(client_id_.begin(), client_id_.end());
+    msg.header.messageLength = msg.body.size();
+    
+    SendMessage(sock, msg);
+
+    std::cout << "[Client " << client_id_ << "] Отправляю CLIENT_CONNECT..." << std::endl;
+}
+
 std::string Client::GetId() const {
     return client_id_;
 }
 
-void Client::SendMessage(const Message& msg) {
-    std::vector<uint8_t> header_bytes = Message::SerializeHeader(msg.header);
-
-    boost::asio::write(socket_, boost::asio::buffer(header_bytes));
-    boost::asio::write(socket_, boost::asio::buffer(msg.body));
-}
-
 void Client::StartSync() {
     // 1. Отправляем серверу наш ID
-    Message connect_msg;
-    connect_msg.header.messageID = static_cast<uint32_t>(MessageType::CLIENT_CONNECT);
-    
-    connect_msg.body.resize(client_id_.size());
-    std::memcpy(connect_msg.body.data(), client_id_.c_str(), client_id_.size());
-    connect_msg.header.messageLength = connect_msg.body.size();
-    
-    std::cout << "[Client " << client_id_ << "] Отправляю CLIENT_CONNECT..." << std::endl;
-    SendMessage(connect_msg);
+   
+    ConnectToServer();
+    SendAuth(socket_);
 
     // 2. Сканируем файлы и отправляем FILE_LIST
     auto local_files = LocalFileScanner::ScanDirectory(local_dir_);
-    
-    // Формат "filename|size|checksum\n"
     std::string payload;
     for (const auto& file : local_files) {
         payload += file.filename + "|" + std::to_string(file.size) + "|" + file.checksum + "\n";
@@ -86,120 +193,42 @@ void Client::StartSync() {
 
     Message list_msg;
     list_msg.header.messageID = static_cast<uint32_t>(MessageType::FILE_LIST);
-    list_msg.body = std::vector<uint8_t>(payload.begin(), payload.end());
+    list_msg.body.assign(payload.begin(), payload.end());
     list_msg.header.messageLength = list_msg.body.size();
+    SendMessage(socket_, list_msg);
 
-    std::cout << "[Client " << client_id_ << "] Отправляю FILE_LIST (" << local_files.size() << " файлов)..." << std::endl;
-    SendMessage(list_msg);
-
-    // 3. Ждем FILE_SYNC_RESPONSE от сервера
-    std::vector<uint8_t> header_buf(8);
-    boost::system::error_code ec;
-    boost::asio::read(socket_, boost::asio::buffer(header_buf), ec);
+    // 3. Получение списка нужных файлов
+    std::vector<uint8_t> h_buf(8);
+    boost::asio::read(socket_, boost::asio::buffer(h_buf));
+    MsgHeader resp_hdr = Message::DeserializeHeader(h_buf);
     
-    if (ec) {
-        std::cerr << "[Client] Ошибка при чтении ответа: " << ec.message() << std::endl;
-        return;
+    std::vector<uint8_t> b_buf(resp_hdr.messageLength);
+    boost::asio::read(socket_, boost::asio::buffer(b_buf));
+    std::string to_send_raw((char*)b_buf.data(), b_buf.size());
+
+    // Парсим список файлов (по символу \n)
+    std::vector<std::string> files_to_send;
+    std::string current_name;
+    for (char c : to_send_raw) {
+        if (c == '\n') {
+            if (!current_name.empty()) 
+            { 
+                files_to_send.push_back(current_name); current_name.clear(); 
+            }
+        } else current_name += c;
     }
 
-    MsgHeader resp_hdr = Message::DeserializeHeader(header_buf);
-    if (resp_hdr.messageID == static_cast<uint32_t>(MessageType::FILE_SYNC_RESPONSE)) {
-        std::vector<uint8_t> body_buf(resp_hdr.messageLength);
-        boost::asio::read(socket_, boost::asio::buffer(body_buf));
+    std::cout << "[Client] Сервер запросил " << files_to_send.size() << " файлов." << std::endl;
 
-        std::string payload((char*)body_buf.data(), body_buf.size());
-        
-        // Разбиваем payload по \n, чтобы получить список нужных файлов
-        std::vector<std::string> files_to_send;
-        std::string current_name;
-        for (char c : payload) {
-            if (c == '\n') {
-                if (!current_name.empty()) {
-                    files_to_send.push_back(current_name);
-                    current_name.clear();
-                }
-            } else {
-                current_name += c;
-            }
-        }
-        if (!current_name.empty()) {
-            files_to_send.push_back(current_name);
-        }
-
-        std::cout << "[Client] Сервер запросил " << files_to_send.size() << " файлов для синхронизации." << std::endl;
-
-        // Отправляем файлы параллельно
-        std::vector<std::thread> upload_threads;
-        for (const auto& fname : files_to_send) {
-            upload_threads.emplace_back([this, fname]() {
-                try {
-                    boost::asio::io_context thread_io;
-                    tcp::socket thread_socket(thread_io);
-                    tcp::endpoint endpoint(boost::asio::ip::make_address(server_host_), server_port_);
-                    thread_socket.connect(endpoint);
-
-                    // 1. Сначала отправим CLIENT_CONNECT, чтобы сервер знал, чей это файл 
-                    Message connect_msg;
-                    connect_msg.header.messageID = static_cast<uint32_t>(MessageType::CLIENT_CONNECT);
-                    connect_msg.body.resize(client_id_.size());
-                    std::memcpy(connect_msg.body.data(), client_id_.c_str(), client_id_.size());
-                    connect_msg.header.messageLength = connect_msg.body.size();
-                    
-                    std::vector<uint8_t> conn_hdr = Message::SerializeHeader(connect_msg.header);
-                    boost::asio::write(thread_socket, boost::asio::buffer(conn_hdr));
-                    boost::asio::write(thread_socket, boost::asio::buffer(connect_msg.body));
-
-                    // 2. Читаем и отправляем файл кусочками (FILE_CHUNK)
-                    std::filesystem::path filepath = std::filesystem::path(local_dir_) / fname;
-                    std::ifstream file(filepath, std::ios::binary);
-                    if (!file) return;
-
-                    char buffer[262144]; // Отправляем чанками по 256 KB
-                    size_t total_sent = 0;
-                    
-                    while (file.read(buffer, sizeof(buffer)) || file.gcount() > 0) {
-                        size_t bytes_read = file.gcount();
-                        
-                        Message chunk_msg;
-                        chunk_msg.header.messageID = static_cast<uint32_t>(MessageType::FILE_CHUNK);
-                        
-                        uint32_t name_len = fname.size();
-                        uint32_t name_len_net = htonl(name_len);
-                        
-                        chunk_msg.body.resize(4 + name_len + bytes_read);
-                        std::memcpy(chunk_msg.body.data(), &name_len_net, 4);
-                        std::memcpy(chunk_msg.body.data() + 4, fname.c_str(), name_len);
-                        std::memcpy(chunk_msg.body.data() + 4 + name_len, buffer, bytes_read);
-
-                        chunk_msg.header.messageLength = chunk_msg.body.size();
-                        
-                        std::vector<uint8_t> chunk_hdr = Message::SerializeHeader(chunk_msg.header);
-                        boost::asio::write(thread_socket, boost::asio::buffer(chunk_hdr));
-                        boost::asio::write(thread_socket, boost::asio::buffer(chunk_msg.body));
-                        
-                        total_sent += bytes_read;
-                    }
-                    
-                    std::cout << "[Client] Файл " << fname << " (" << total_sent << " байт) успешно отправлен [Поток: " << std::this_thread::get_id() << "]" << std::endl;
-                    
-                    // Закрываем сокет
-                    boost::system::error_code ec;
-                    thread_socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
-                    thread_socket.close(ec);
-                    
-                } catch (const std::exception& e) {
-                    std::cerr << "[Client] Ошибка параллельной отправки " << fname << ": " << e.what() << std::endl;
-                }
-            });
-        }
-
-        // Ждём завершения всех потоков отправок
-        for (auto& t : upload_threads) {
-            if (t.joinable()) {
-                t.join();
-            }
-        }
-        
-        std::cout << "[Client] Все запрошенные файлы успешно отправлены." << std::endl;
+    // 4. Параллельная отправка
+    std::vector<std::thread> upload_threads;
+    for (const auto& fname : files_to_send) {
+        upload_threads.emplace_back(&Client::ExecuteUploadTask, this, fname);
     }
+
+    for (auto& t : upload_threads) {
+        if (t.joinable()) t.join();
+    }
+    
+    std::cout << "[Client] Синхронизация успешно завершена." << std::endl;
 }

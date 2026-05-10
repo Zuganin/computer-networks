@@ -15,10 +15,15 @@ private:
     std::string local_dir_;
     std::string server_host_;
     int server_port_;
+    bool use_dma_;
     boost::asio::io_context io_;
     tcp::socket socket_;
 
-    void SendMessage(const Message& msg);
+    void SendMessage(tcp::socket& sock, const Message& msg);
+    void SendAuth(boost::asio::ip::tcp::socket& sock);
+    void ExecuteUploadTask(std::string fname);
+    size_t SendFileDMA(tcp::socket& sock, const std::string& fname, const std::string& filepath);
+    size_t SendFileStandard(tcp::socket& sock, const std::string& fname, const std::string& filepath);
 
 public:
     Client(const std::string& config_file);
@@ -26,7 +31,7 @@ public:
     void ConnectToServer();
     std::string GetId() const;
     void StartSync();
-    
+
 };
 
 #endif

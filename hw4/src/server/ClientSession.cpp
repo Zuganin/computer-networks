@@ -3,7 +3,7 @@
 #include <memory>
 #include <vector>
 #include "../common/Message.h"
-#include "../client/LocalFileScanner.h" // Подключаем сканер
+#include "../client/LocalFileScanner.h"
 #include <iostream>
 #include <sstream>
 #include <fstream>
@@ -67,9 +67,35 @@ void ClientSession::ReadBody() {
         [this, self](boost::system::error_code ec, std::size_t /*length*/) {
             if (!ec) {
                 HandleMessage();
-                ReadHeader();
+                if (!is_dma_mode_) {
+                    ReadHeader();
+                }
             } else {
                 std::cout << "[ClientSession] Произошла ошибка чтения сообщения." << std::endl;
+            }
+        });
+}
+
+void ClientSession::ReadRawDMA() {
+    // Читаем либо размер буфера, либо остаток файла (что меньше)
+    size_t to_read = std::min(static_cast<uint64_t>(dma_buffer_.size()), dma_bytes_expected_);
+    
+    auto self(shared_from_this());
+    boost::asio::async_read(socket_, boost::asio::buffer(dma_buffer_.data(), to_read),
+        [this, self](boost::system::error_code ec, std::size_t bytes_read) {
+            if (!ec) {
+                dma_file_.write(dma_buffer_.data(), bytes_read);
+                dma_bytes_expected_ -= bytes_read;
+                
+                if (dma_bytes_expected_ > 0) {
+                    ReadRawDMA(); 
+                } else {
+                    dma_file_.close();
+                    is_dma_mode_ = false;
+                    ReadHeader();
+                }
+            } else {
+                std::cerr << "[Server] Ошибка при загрузке сырых данных (DMA)." << std::endl;
             }
         });
 }
@@ -162,5 +188,28 @@ void ClientSession::HandleMessage() {
             size_t content_size = body_buffer_.size() - 4 - name_len;
             file.write(reinterpret_cast<char*>(body_buffer_.data() + 4 + name_len), content_size);
         }
+    }
+    else if (current_header_.messageID == static_cast<uint32_t>(MessageType::FILE_START_DMA)) {
+        if (body_buffer_.size() < 8) return;
+
+        uint64_t size_net;
+        std::memcpy(&size_net, body_buffer_.data(), 8);
+        
+        // Кроссплатформенная распаковка 64 бит
+        uint32_t high = ntohl(static_cast<uint32_t>(size_net >> 32));
+        uint32_t low = ntohl(static_cast<uint32_t>(size_net & 0xFFFFFFFFULL));
+        dma_bytes_expected_ = (static_cast<uint64_t>(low) << 32) | high;
+
+        // 2. Читаем имя файла
+        std::string fname(reinterpret_cast<char*>(body_buffer_.data() + 8), body_buffer_.size() - 8);
+        std::filesystem::path filepath = std::filesystem::path(storage_dir_) / client_id_ / fname;
+
+        // 3. Открываем файл
+        dma_file_.open(filepath, std::ios::binary | std::ios::trunc);
+
+        // 4. Включаем флаг DMA и запускаем чтение сырых данных
+        is_dma_mode_ = true;
+        dma_buffer_.resize(262144); // Выделяем буфер под скачивание (256 KB)
+        ReadRawDMA(); 
     }
 }

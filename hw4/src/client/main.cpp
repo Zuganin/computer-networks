@@ -9,7 +9,6 @@ int main() {
     try {
         Client client("/Users/vadimzenin/ДЗшки/computer-network/hw4/src/common/config.yaml");
         std::cout << "   Client ID: " << client.GetId() << "\n\n";
-        client.ConnectToServer();
         client.StartSync();
 
     } catch (const std::exception& e) {
