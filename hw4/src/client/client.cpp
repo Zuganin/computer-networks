@@ -96,6 +96,25 @@ size_t Client::SendFileStandard(tcp::socket& sock, const std::string& fname, con
     return total_sent;
 }
 
+void Client::SendAuth(boost::asio::ip::tcp::socket& sock) {
+    Message msg;
+    msg.header.messageID = static_cast<uint32_t>(MessageType::CLIENT_CONNECT);
+    msg.body.assign(client_id_.begin(), client_id_.end());
+    msg.header.messageLength = msg.body.size();
+    
+    SendMessage(sock, msg);
+
+    std::cout << "[Client " << client_id_ << "] Отправляю CLIENT_CONNECT..." << std::endl;
+}
+
+void Client::SendUploadAuth(tcp::socket& sock) {
+    Message msg;
+    msg.header.messageID = static_cast<uint32_t>(MessageType::UPLOAD_AUTH);
+    msg.body.assign(client_id_.begin(), client_id_.end());
+    msg.header.messageLength = msg.body.size();
+    SendMessage(sock, msg);
+}
+
 void Client::ExecuteUploadTask(std::string fname) {
     try {
         boost::asio::io_context t_io;
@@ -104,7 +123,7 @@ void Client::ExecuteUploadTask(std::string fname) {
         t_sock.connect(endpoint);
 
         // 1. Авторизация в новом соединении
-        SendAuth(t_sock);
+        SendUploadAuth(t_sock);
 
         // 2. Отправка файла
         std::string path = (std::filesystem::path(local_dir_) / fname).string();
@@ -126,13 +145,16 @@ void Client::ExecuteUploadTask(std::string fname) {
     }
 }
 
-Client::Client(const std::string& config_file) : client_id_(""), local_dir_(""), server_host_(""), server_port_(5252), use_dma_(false), io_(), socket_(io_) {
+Client::Client(const std::string& config_file, int client_index) : client_id_(""), local_dir_(""), server_host_(""), server_port_(5252), use_dma_(false), io_(), socket_(io_) {
     YAML::Node config = YAML::LoadFile(config_file);
-    client_id_ = config["client_id"].as<std::string>();
-    local_dir_ = config["local_dir"].as<std::string>();
-    server_host_ = config["server_host"].as<std::string>();
-    server_port_ = config["server_port"].as<int>();
-    if (config["use_dma"]) use_dma_ = config["use_dma"].as<bool>();
+    server_host_ = config["server"]["host"].as<std::string>();
+    server_port_ = config["server"]["port"].as<int>();
+    auto client_cfg = config["clients"][client_index];
+    client_id_ = client_cfg["client_id"].as<std::string>();
+    local_dir_ = client_cfg["local_dir"].as<std::string>();
+    if (client_cfg["use_dma"]) {
+        use_dma_ = client_cfg["use_dma"].as<bool>();
+    }
     
     std::cout << "[Client " << client_id_ << "] Инициализирован. DMA: " << (use_dma_?"ВКЛ":"ВЫКЛ") << std::endl;
 }
@@ -163,17 +185,6 @@ void Client::ConnectToServer(){
     }
 }
 
-void Client::SendAuth(boost::asio::ip::tcp::socket& sock) {
-    Message msg;
-    msg.header.messageID = static_cast<uint32_t>(MessageType::CLIENT_CONNECT);
-    msg.body.assign(client_id_.begin(), client_id_.end());
-    msg.header.messageLength = msg.body.size();
-    
-    SendMessage(sock, msg);
-
-    std::cout << "[Client " << client_id_ << "] Отправляю CLIENT_CONNECT..." << std::endl;
-}
-
 std::string Client::GetId() const {
     return client_id_;
 }
@@ -183,6 +194,16 @@ void Client::StartSync() {
    
     ConnectToServer();
     SendAuth(socket_);
+
+    std::vector<uint8_t> auth_h_buf(8);
+    boost::asio::read(socket_, boost::asio::buffer(auth_h_buf));
+    MsgHeader auth_hdr = Message::DeserializeHeader(auth_h_buf);
+
+    if (auth_hdr.messageID == static_cast<uint32_t>(MessageType::CLIENT_ALREADY_CONNECTED)) {
+        std::cerr << "Клиент уже подключён...\n";
+        socket_.close();
+        return; 
+    }
 
     // 2. Сканируем файлы и отправляем FILE_LIST
     auto local_files = LocalFileScanner::ScanDirectory(local_dir_);

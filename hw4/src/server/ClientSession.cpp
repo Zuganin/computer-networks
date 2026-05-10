@@ -33,9 +33,18 @@ std::vector<FileInfo> ParseFileList(const std::string& payload) {
     return files;
 }
 
+void ClientSession::SendHeaderOnly(MessageType type) {
+    MsgHeader hdr;
+    hdr.messageID = static_cast<uint32_t>(type);
+    hdr.messageLength = 0;
 
+    auto bytes = Message::SerializeHeader(hdr);
+    auto self(shared_from_this());
+    boost::asio::async_write(socket_, boost::asio::buffer(bytes),
+        [self](boost::system::error_code, std::size_t) {});
+}
 
-ClientSession::ClientSession(tcp::socket socket, const std::string& storage_dir) : socket_(std::move(socket)), storage_dir_(storage_dir) {}
+ClientSession::ClientSession(tcp::socket socket, const std::string& storage_dir, std::unordered_set<std::string>& active_clients) : socket_(std::move(socket)), storage_dir_(storage_dir), active_clients_(active_clients) {}
 
 void ClientSession::Start() {
     std::cout << "[ClientSession] Подключился новый клиент." << std::endl;
@@ -50,12 +59,12 @@ void ClientSession::ReadHeader() {
         [this, self](boost::system::error_code ec, std::size_t /*length*/) {
             if (!ec) {
                 current_header_ = Message::DeserializeHeader(header_buffer_);
-                std::cout << "[ClientSession] Получен заголовок. Тип: " << current_header_.messageID 
-                          << ", длина: " << current_header_.messageLength << " байт" << std::endl;
+                // std::cout << "[ClientSession] Получен заголовок. Тип: " << current_header_.messageID 
+                //           << ", длина: " << current_header_.messageLength << " байт" << std::endl;
                 
                 ReadBody();
             } else {
-                std::cout << "[ClientSession] Клиент отключился." << std::endl;
+                // std::cout << "[ClientSession] Клиент отключился." << std::endl;
             }
         });
 }
@@ -104,14 +113,37 @@ void ClientSession::HandleMessage() {
     if (current_header_.messageID == static_cast<uint32_t>(MessageType::CLIENT_CONNECT)) {
 
         client_id_ = std::string(body_buffer_.begin(), body_buffer_.end());
-        
-        std::cout << "[Server] Подключился клиент с ID: " << client_id_ << std::endl;
-        
-        std::filesystem::path client_path = std::filesystem::path(storage_dir_) / client_id_;
+
+        if (active_clients_.count(client_id_)) {
+            std::cout << "[Server] Клиент " << client_id_
+                      << " уже активен — отклонено." << std::endl;
+
+            MsgHeader hdr;
+            hdr.messageID     = static_cast<uint32_t>(MessageType::CLIENT_ALREADY_CONNECTED);
+            hdr.messageLength = 0;
+            auto bytes = Message::SerializeHeader(hdr);
+            auto self(shared_from_this());
+            boost::asio::async_write(socket_, boost::asio::buffer(bytes),
+                [this, self](boost::system::error_code, std::size_t) {
+                    boost::system::error_code ignored;
+                    socket_.shutdown(tcp::socket::shutdown_both, ignored);
+                    socket_.close(ignored);
+                    client_id_.clear();
+                });
+            return;
+        }
+
+        active_clients_.insert(client_id_);
+        std::cout << "[Server] Клиент " << client_id_ << " зарегистрирован." << std::endl;
+
+        std::filesystem::path client_path =
+            std::filesystem::path(storage_dir_) / client_id_;
         std::filesystem::create_directories(client_path);
-        
-        std::cout << "[Server] Директория готова: " << client_path << std::endl;
+
+        SendHeaderOnly(MessageType::AUTH_OK);
+        return;
     }
+
     else if (current_header_.messageID == static_cast<uint32_t>(MessageType::FILE_LIST)) {
         std::string payload(body_buffer_.begin(), body_buffer_.end());
         auto client_files = ParseFileList(payload);
@@ -209,7 +241,13 @@ void ClientSession::HandleMessage() {
 
         // 4. Включаем флаг DMA и запускаем чтение сырых данных
         is_dma_mode_ = true;
-        dma_buffer_.resize(262144); // Выделяем буфер под скачивание (256 KB)
+        dma_buffer_.resize(262144);
         ReadRawDMA(); 
+    }
+    else if (current_header_.messageID == static_cast<uint32_t>(MessageType::UPLOAD_AUTH)) {
+        client_id_ = std::string(body_buffer_.begin(), body_buffer_.end());
+        std::cout << "[Server] Upload-поток от клиента " << client_id_ << std::endl;
+        SendHeaderOnly(MessageType::AUTH_OK);
+        return;
     }
 }

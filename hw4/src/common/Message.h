@@ -10,7 +10,10 @@ enum class MessageType : uint8_t {
     FILE_SYNC_RESPONSE = 3,
     FILE_CHUNK = 4,
     FILE_TRANSFER_ACK = 5,
-    FILE_START_DMA = 6
+    FILE_START_DMA = 6,
+    AUTH_OK = 10,
+    CLIENT_ALREADY_CONNECTED = 11,
+    UPLOAD_AUTH = 12,
 };
 
 struct MsgHeader {

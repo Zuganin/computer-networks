@@ -21,12 +21,13 @@ private:
 
     void SendMessage(tcp::socket& sock, const Message& msg);
     void SendAuth(boost::asio::ip::tcp::socket& sock);
+    void SendUploadAuth(tcp::socket& sock);
     void ExecuteUploadTask(std::string fname);
     size_t SendFileDMA(tcp::socket& sock, const std::string& fname, const std::string& filepath);
     size_t SendFileStandard(tcp::socket& sock, const std::string& fname, const std::string& filepath);
 
 public:
-    Client(const std::string& config_file);
+    Client(const std::string& config_file, int client_index);
     ~Client();
     void ConnectToServer();
     std::string GetId() const;
