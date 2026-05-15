@@ -1,8 +1,13 @@
 #include "client.h"
+#include <algorithm>
 #include <iostream>
 #include <fstream>
 #include <thread>
 #include <chrono>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
+#include <functional>
 #include <boost/system/error_code.hpp>
 #include <yaml-cpp/yaml.h>
 #include "../common/Message.h"
@@ -16,6 +21,10 @@
 #elif __linux__
 #include <sys/sendfile.h>
 #include <fcntl.h>
+#include <endian.h>
+#ifndef htonll
+#define htonll(x) htobe64(x)
+#endif
 #endif
 
 void Client::SendMessage(tcp::socket& sock, const Message& msg) {
@@ -145,7 +154,7 @@ void Client::ExecuteUploadTask(std::string fname) {
     }
 }
 
-Client::Client(const std::string& config_file, int client_index) : client_id_(""), local_dir_(""), server_host_(""), server_port_(5252), use_dma_(false), io_(), socket_(io_) {
+Client::Client(const std::string& config_file, int client_index) : client_id_(""), local_dir_(""), server_host_(""), server_port_(5252), use_dma_(false), max_connections_(32), io_(), socket_(io_) {
     YAML::Node config = YAML::LoadFile(config_file);
     server_host_ = config["server"]["host"].as<std::string>();
     server_port_ = config["server"]["port"].as<int>();
@@ -155,8 +164,12 @@ Client::Client(const std::string& config_file, int client_index) : client_id_(""
     if (client_cfg["use_dma"]) {
         use_dma_ = client_cfg["use_dma"].as<bool>();
     }
+    if (client_cfg["max_connections"]) {
+        max_connections_ = client_cfg["max_connections"].as<int>();
+    }
     
-    std::cout << "[Client " << client_id_ << "] Инициализирован. DMA: " << (use_dma_?"ВКЛ":"ВЫКЛ") << std::endl;
+    std::cout << "[Client " << client_id_ << "] Инициализирован. DMA: " << (use_dma_?"ВКЛ":"ВЫКЛ") 
+              << ", Макс. подключений: " << max_connections_ << std::endl;
 }
 Client::~Client(){
     try {
@@ -239,15 +252,32 @@ void Client::StartSync() {
         } else current_name += c;
     }
 
-    std::cout << "[Client] Сервер запросил " << files_to_send.size() << " файлов." << std::endl;
-
-    // 4. Параллельная отправка
-    std::vector<std::thread> upload_threads;
+    std::mutex queue_mutex;
+    std::queue<std::string> tasks;
     for (const auto& fname : files_to_send) {
-        upload_threads.emplace_back(&Client::ExecuteUploadTask, this, fname);
+        tasks.push(fname);
     }
 
-    for (auto& t : upload_threads) {
+    int num_threads = std::min(max_connections_, (int)files_to_send.size());
+    if (num_threads == 0) num_threads = 1;
+
+    std::vector<std::thread> workers;
+    for (int i = 0; i < num_threads; ++i) {
+        workers.emplace_back([this, &queue_mutex, &tasks]() {
+            while (true) {
+                std::string fname;
+                {
+                    std::lock_guard<std::mutex> lock(queue_mutex);
+                    if (tasks.empty()) break;
+                    fname = tasks.front();
+                    tasks.pop();
+                }
+                this->ExecuteUploadTask(fname);
+            }
+        });
+    }
+
+    for (auto& t : workers) {
         if (t.joinable()) t.join();
     }
     

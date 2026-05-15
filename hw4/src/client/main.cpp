@@ -4,7 +4,7 @@
 #include <yaml-cpp/yaml.h>
 
 static const std::string CONFIG_PATH =
-    "/Users/vadimzenin/ДЗшки/computer-network/hw4/src/common/config.yaml";
+    "../src/common/config.yaml";
 
 int main() {
     std::cout << "╔════════════════════════════════════════════════════════════╗\n";

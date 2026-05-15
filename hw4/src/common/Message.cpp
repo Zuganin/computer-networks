@@ -2,8 +2,7 @@
 #include <arpa/inet.h>
 #include <vector>
 #include <cstring>
-
-
+#include <stdexcept>
 
 std::vector<uint8_t>  Message::SerializeHeader(const MsgHeader& hdr) {
     std::vector<uint8_t> buffer(8);

@@ -16,6 +16,7 @@ private:
     std::string server_host_;
     int server_port_;
     bool use_dma_;
+    int max_connections_;
     boost::asio::io_context io_;
     tcp::socket socket_;
 
